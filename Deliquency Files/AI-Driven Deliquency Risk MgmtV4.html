@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Delinquency Intelligence V4</title>
+<style>
+body{font-family:Arial;margin:20px;background:#f4f6f8}
+button{margin:5px;padding:8px;background:#10b981;color:white;border:none}
+.kpi{display:inline-block;background:white;padding:10px;margin:5px}
+canvas{background:white;margin-top:10px}
+table{width:100%;border-collapse:collapse;background:white}
+th,td{border:1px solid #ddd;padding:5px;font-size:11px}
+</style>
+</head>
+
+<body>
+
+<h2>📊 V4 Enterprise Delinquency Analytics</h2>
+
+<button onclick="Controller.init()">Generate</button>
+<input type="file" onchange="InputLayer.loadCSV(event)">
+<button onclick="ExportLayer.download()">Export</button>
+
+<div id="kpis"></div>
+
+<canvas id="chart1" width="400" height="150"></canvas>
+<canvas id="chart2" width="400" height="150"></canvas>
+
+<div id="metrics"></div>
+
+<table id="table"></table>
+
+<div>
+<h3>Impact Simulator</h3>
+<select id="action">
+<option value="monitor">Monitor</option>
+<option value="alert">Alert</option>
+<option value="restructure">Restructure</option>
+</select>
+<button onclick="ImpactLayer.run()">Simulate</button>
+<div id="impact"></div>
+</div>
+
+<script>
+
+/* ===== Input Layer (NEW) ===== */
+const InputLayer={
+ loadCSV(e){
+  let file=e.target.files[0];
+  let reader=new FileReader();
+  reader.onload=function(){
+    let rows=reader.result.split("\n").map(r=>r.split(","));
+    let headers=rows[0];
+    DataLayer.dataset=rows.slice(1).map(r=>{
+      let obj={};
+      headers.forEach((h,i)=>obj[h]=+r[i]||r[i]);
+      return obj;
+    });
+    Controller.pipeline();
+  };
+  reader.readAsText(file);
+ }
+};
+
+/* ===== Existing Layers (Simplified) ===== */
+const DataLayer={dataset:[]};
+
+const FeatureLayer={
+ run(d){
+  return d.map(x=>{
+    x.util=x.balance/x.limit;
+    x.stability=Math.random();
+    return x;
+  });
+ }
+};
+
+const MLModel={
+ predict(d){
+  let z=1.8*d.util-2.2*d.payRatio+1.5*(d.dpd/90);
+  return 1/(1+Math.exp(-z));
+ }
+};
+
+const RiskEngine={
+ run(d){
+  return d.map(x=>{
+    x.score=MLModel.predict(x);
+    x.risk=x.score<0.3?"LOW":x.score<0.7?"MED":"HIGH";
+    x.actual=x.dpd>30?1:0; // ground truth proxy
+    x.pred=x.score>0.5?1:0;
+    return x;
+  });
+ }
+};
+
+/* ===== NEW: Evaluation Layer ===== */
+const EvaluationLayer={
+ compute(d){
+  let TP=0,FP=0,TN=0,FN=0;
+  d.forEach(x=>{
+    if(x.pred===1 && x.actual===1) TP++;
+    else if(x.pred===1 && x.actual===0) FP++;
+    else if(x.pred===0 && x.actual===0) TN++;
+    else FN++;
+  });
+
+  let acc=(TP+TN)/d.length;
+  let precision=TP/(TP+FP||1);
+  let recall=TP/(TP+FN||1);
+
+  document.getElementById("metrics").innerHTML=
+    `Accuracy:${acc.toFixed(2)} Precision:${precision.toFixed(2)} Recall:${recall.toFixed(2)}`;
+ }
+};
+
+/* ===== NEW: Multi Charts ===== */
+const ChartLayer={
+ render(d){
+  let ctx1=document.getElementById("chart1").getContext("2d");
+  ctx1.clearRect(0,0,400,150);
+
+  let high=d.filter(x=>x.risk==="HIGH").length;
+  let med=d.filter(x=>x.risk==="MED").length;
+  let low=d.filter(x=>x.risk==="LOW").length;
+
+  [low,med,high].forEach((v,i)=>{
+    ctx1.fillStyle=["green","orange","red"][i];
+    ctx1.fillRect(50+i*100,150-v/5,50,v/5);
+  });
+
+  let ctx2=document.getElementById("chart2").getContext("2d");
+  ctx2.clearRect(0,0,400,150);
+
+  d.slice(0,100).forEach((x,i)=>{
+    ctx2.fillRect(i*4,150-x.score*100,2,2);
+  });
+ }
+};
+
+/* ===== NEW: Impact Simulation ===== */
+const ImpactLayer={
+ run(){
+  let action=document.getElementById("action").value;
+  let reduction=action==="monitor"?0.05:action==="alert"?0.15:0.30;
+
+  let affected=DataLayer.dataset.filter(x=>x.risk==="HIGH").length;
+  let improvement=Math.round(affected*reduction);
+
+  document.getElementById("impact").innerHTML=
+    `Expected prevented defaults: ${improvement}`;
+ }
+};
+
+/* ===== UI ===== */
+const UILayer={
+ render(d){
+  document.getElementById("kpis").innerHTML=
+    `Total:${d.length} High:${d.filter(x=>x.risk==="HIGH").length}`;
+
+  let h=Object.keys(d[0]);
+  document.getElementById("table").innerHTML=
+    "<tr>"+h.map(x=>`<th>${x}</th>`).join("")+"</tr>"+
+    d.slice(0,50).map(r=>
+      "<tr>"+h.map(k=>`<td>${r[k]}</td>`).join("")+"</tr>"
+    ).join("");
+ }
+};
+
+/* ===== Export ===== */
+const ExportLayer={
+ download(){
+  let d=DataLayer.dataset;
+  let h=Object.keys(d[0]);
+  let csv=h.join(",")+"\n";
+  d.forEach(r=>csv+=h.map(x=>r[x]).join(",")+"\n");
+
+  let a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([csv]));
+  a.download="v4.csv";
+  a.click();
+ }
+};
+
+/* ===== Controller ===== */
+const Controller={
+ init(){
+  DataLayer.dataset=Array.from({length:500},(_,i)=>({
+    id:i,
+    limit:10000,
+    balance:Math.random()*10000,
+    payRatio:Math.random(),
+    dpd:Math.random()*90
+  }));
+  this.pipeline();
+ },
+ pipeline(){
+  let d=DataLayer.dataset;
+  d=FeatureLayer.run(d);
+  d=RiskEngine.run(d);
+
+  DataLayer.dataset=d;
+
+  UILayer.render(d);
+  ChartLayer.render(d);
+  EvaluationLayer.compute(d);
+ }
+};
+
+</script>
+
+</body>
+</html>

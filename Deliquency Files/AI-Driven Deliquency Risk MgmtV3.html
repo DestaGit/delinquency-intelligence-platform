@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Delinquency Intelligence V3 (ML)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body { font-family: Arial; margin:20px; background:#f4f6f8;}
+h1 { color:#111827;}
+button { padding:8px 12px; margin:5px; background:#10b981; color:white; border:none; border-radius:5px;}
+select { padding:6px; margin:5px;}
+.kpi { display:inline-block; background:white; padding:10px; margin:5px; border-radius:6px;}
+table { border-collapse: collapse; width:100%; background:white;}
+th, td { border:1px solid #ddd; padding:5px; font-size:11px; text-align:center;}
+th { background:#111827; color:white;}
+.container { overflow-x:auto; margin-top:10px;}
+.panel { background:white; padding:10px; margin-top:10px; border-radius:6px;}
+canvas { margin-top:10px; }
+</style>
+</head>
+
+<body>
+
+<h1>📊 Delinquency Intelligence V3 (ML Enabled)</h1>
+
+<button onclick="Controller.init()">Generate + Analyze</button>
+<button onclick="ExportLayer.download()">Download CSV</button>
+
+<select onchange="UILayer.filter(this.value)">
+<option value="ALL">All</option>
+<option value="LOW">Low</option>
+<option value="MEDIUM">Medium</option>
+<option value="HIGH">High</option>
+</select>
+
+<div id="kpis"></div>
+<canvas id="chart" width="400" height="150"></canvas>
+
+<div class="container">
+<table id="table"></table>
+</div>
+
+<div id="drill" class="panel"></div>
+
+<div class="panel">
+<h3>Scenario Simulator</h3>
+Util <input id="sim_util" value="0.5">
+PayRatio <input id="sim_pay" value="0.8">
+DPD <input id="sim_dpd" value="10">
+Vol <input id="sim_vol" value="0.4">
+Stability <input id="sim_stab" value="0.7">
+<button onclick="Simulator.run()">Run</button>
+<div id="sim_result"></div>
+</div>
+
+<script>
+
+/* ================= DATA ================= */
+const DataLayer = {
+ dataset: [],
+ generate(n=500){
+   this.dataset=[];
+   for(let i=1;i<=n;i++){
+     let limit=rand(5000,25000);
+     let balance=rand(1000,limit);
+     this.dataset.push({
+       id:"CUST"+String(i).padStart(3,'0'),
+       limit,
+       balance,
+       payRatio:randf(0.5,0.98),
+       dpd:Math.round(rand(0,90)),
+       vol:randf(0.2,0.7)
+     });
+   }
+   return this.dataset;
+ }
+};
+
+/* ================= VALIDATION ================= */
+const ValidationLayer = {
+ check(data){
+   return data.filter(d => d.limit>0 && d.balance>=0);
+ }
+};
+
+/* ================= FEATURES ================= */
+const FeatureLayer = {
+ enrich(data){
+   return data.map(d=>{
+     d.util=+(d.balance/d.limit).toFixed(2);
+     d.stability=randf(0.3,0.95);
+     return d;
+   });
+ }
+};
+
+/* ================= ML MODEL ================= */
+const MLModel = {
+ weights:{ util:1.8, payRatio:-2.2, dpd:1.5, vol:0.9, stability:-1.3 },
+ bias:-0.5,
+ predict(d){
+   let z =
+     this.weights.util*d.util +
+     this.weights.payRatio*d.payRatio +
+     this.weights.dpd*(d.dpd/90) +
+     this.weights.vol*d.vol +
+     this.weights.stability*d.stability +
+     this.bias;
+   return 1/(1+Math.exp(-z));
+ }
+};
+
+/* ================= RISK ================= */
+const RiskEngine = {
+ apply(data){
+   return data.map(d=>{
+     let p=MLModel.predict(d);
+     d.score=+p.toFixed(2);
+     d.risk=p<0.3?"LOW":p<0.7?"MEDIUM":"HIGH";
+     return d;
+   });
+ }
+};
+
+/* ================= RECOMMEND ================= */
+const RecommendationLayer = {
+ apply(data){
+   return data.map(d=>{
+     d.action=d.risk==="LOW"?"Monitor":
+              d.risk==="MEDIUM"?"Alert":
+              "Restructure";
+     return d;
+   });
+ }
+};
+
+/* ================= EXPLAIN ================= */
+const ExplainLayer = {
+ apply(data){
+   return data.map(d=>{
+     let contrib={
+       util:MLModel.weights.util*d.util,
+       pay:MLModel.weights.payRatio*d.payRatio,
+       dpd:MLModel.weights.dpd*(d.dpd/90),
+       vol:MLModel.weights.vol*d.vol,
+       stability:MLModel.weights.stability*d.stability
+     };
+     let top=Object.entries(contrib)
+       .sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]))
+       .slice(0,2)
+       .map(x=>x[0]);
+     d.explain=top.join(",");
+     return d;
+   });
+ }
+};
+
+/* ================= CHART ================= */
+const ChartLayer = {
+ render(data){
+   let ctx=document.getElementById("chart").getContext("2d");
+   ctx.clearRect(0,0,400,150);
+   let c={
+     LOW:data.filter(d=>d.risk==="LOW").length,
+     MEDIUM:data.filter(d=>d.risk==="MEDIUM").length,
+     HIGH:data.filter(d=>d.risk==="HIGH").length
+   };
+   let vals=[c.LOW,c.MEDIUM,c.HIGH];
+   let colors=["green","orange","red"];
+   vals.forEach((v,i)=>{
+     ctx.fillStyle=colors[i];
+     ctx.fillRect(50+i*100,150-v/5,50,v/5);
+     ctx.fillText(v,50+i*100,140-v/5);
+   });
+ }
+};
+
+/* ================= UI ================= */
+const UILayer = {
+ filtered:[],
+ renderKPIs(data){
+   document.getElementById("kpis").innerHTML=
+     `Total:${data.length} | High:${data.filter(d=>d.risk==="HIGH").length}`;
+ },
+ renderTable(data){
+   let t=document.getElementById("table");
+   let h=Object.keys(data[0]);
+   t.innerHTML="<tr>"+h.map(x=>`<th>${x}</th>`).join("")+"</tr>"+
+     data.slice(0,50).map(r=>
+       "<tr onclick='DrillLayer.show("+JSON.stringify(r)+")'>"+
+       h.map(k=>`<td>${r[k]}</td>`).join("")+"</tr>"
+     ).join("");
+ },
+ filter(type){
+   this.filtered=type==="ALL"?DataLayer.dataset:
+     DataLayer.dataset.filter(d=>d.risk===type);
+   this.renderTable(this.filtered);
+   ChartLayer.render(this.filtered);
+ }
+};
+
+/* ================= DRILL ================= */
+const DrillLayer = {
+ show(d){
+   document.getElementById("drill").innerHTML=
+     `ID:${d.id}<br>Risk:${d.risk}<br>Score:${d.score}<br>Explain:${d.explain}`;
+ }
+};
+
+/* ================= SIMULATOR ================= */
+const Simulator = {
+ run(){
+   let d={
+     util:+sim_util.value,
+     payRatio:+sim_pay.value,
+     dpd:+sim_dpd.value,
+     vol:+sim_vol.value,
+     stability:+sim_stab.value
+   };
+   let p=MLModel.predict(d);
+   let risk=p<0.3?"LOW":p<0.7?"MEDIUM":"HIGH";
+   sim_result.innerHTML=`Score:${p.toFixed(2)} Risk:${risk}`;
+ }
+};
+
+/* ================= EXPORT ================= */
+const ExportLayer = {
+ download(){
+   let d=DataLayer.dataset;
+   let h=Object.keys(d[0]);
+   let csv=h.join(",")+"\n";
+   d.forEach(r=>csv+=h.map(x=>r[x]).join(",")+"\n");
+   let a=document.createElement("a");
+   a.href=URL.createObjectURL(new Blob([csv]));
+   a.download="v3_data.csv";
+   a.click();
+ }
+};
+
+/* ================= CONTROLLER ================= */
+const Controller = {
+ init(){
+   let d=DataLayer.generate();
+   d=ValidationLayer.check(d);
+   d=FeatureLayer.enrich(d);
+   d=RiskEngine.apply(d);
+   d=RecommendationLayer.apply(d);
+   d=ExplainLayer.apply(d);
+
+   DataLayer.dataset=d;
+   UILayer.filtered=d;
+
+   UILayer.renderKPIs(d);
+   UILayer.renderTable(d);
+   ChartLayer.render(d);
+ }
+};
+
+/* ================= UTILS ================= */
+function rand(min,max){return Math.random()*(max-min)+min;}
+function randf(min,max){return +(Math.random()*(max-min)+min).toFixed(2);}
+
+</script>
+
+</body>
+</html>
